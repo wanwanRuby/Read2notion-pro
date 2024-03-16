@@ -18,7 +18,12 @@ from utils import (
 
 def get_bookmark_list(page_id, bookId):
     """获取我的划线"""
-    filter = {"property": "书籍", "relation": {"contains": page_id}}
+    filter = {
+        "and": [
+            {"property": "书籍", "relation": {"contains": page_id}},
+            {"property": "blockId", "rich_text": {"is_not_empty": True}},
+        ]
+    }
     results = notion_helper.query_all_by_book(
         notion_helper.bookmark_database_id, filter
     )
@@ -41,7 +46,12 @@ def get_bookmark_list(page_id, bookId):
 
 def get_review_list(page_id,bookId):
     """获取笔记"""
-    filter = {"property": "书籍", "relation": {"contains": page_id}}
+    filter = {
+        "and": [
+            {"property": "书籍", "relation": {"contains": page_id}},
+            {"property": "blockId", "rich_text": {"is_not_empty": True}},
+        ]
+    }
     results = notion_helper.query_all_by_book(notion_helper.review_database_id, filter)
     dict1 = {
         get_rich_text_from_result(x, "reviewId"): get_rich_text_from_result(
@@ -211,14 +221,14 @@ def append_blocks(id, contents):
 def content_to_block(content):
     if "bookmarkId" in content:
         return get_callout(
-            content.get("markText"),
+            content.get("markText",""),
             content.get("style"),
             content.get("colorStyle"),
             content.get("reviewId"),
         )
     elif "reviewId" in content:
         return get_callout(
-            content.get("content"),
+            content.get("content",""),
             content.get("style"),
             content.get("colorStyle"),
             content.get("reviewId"),
@@ -265,7 +275,7 @@ if __name__ == "__main__":
             if sort == notion_books.get(bookId).get("Sort"):
                 continue
             pageId = notion_books.get(bookId).get("pageId")
-            print(f"正在同步《{title}》,一共{len(books)}本，当前是第{index+1}本。{pageId}")
+            print(f"正在同步《{title}》,一共{len(books)}本，当前是第{index+1}本。")
             chapter = weread_api.get_chapter_info(bookId)
             bookmark_list = get_bookmark_list(pageId, bookId)
             reviews = get_review_list(pageId,bookId)

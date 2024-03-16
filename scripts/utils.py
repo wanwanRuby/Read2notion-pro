@@ -2,7 +2,10 @@ import calendar
 from datetime import datetime
 from datetime import timedelta
 import hashlib
+import os
 import re
+import requests
+import base64
 from config import (
     RICH_TEXT,
     URL,
@@ -214,49 +217,48 @@ def get_first_and_last_day_of_week(date):
     return first_day_of_week, last_day_of_week
 
 
-def get_properties(dict1, dict2, dict3):
+def get_properties(dict1, dict2):
     properties = {}
-    for key, value in dict2.items():
-        property_type = dict3.get(value)
-        property_value = dict1.get(key)
-        if property_value == None:
+    for key, value in dict1.items():
+        type = dict2.get(key)
+        if value == None:
             continue
         property = None
-        if property_type == TITLE:
+        if type == TITLE:
             property = {
                 "title": [
-                    {"type": "text", "text": {"content": property_value[:MAX_LENGTH]}}
+                    {"type": "text", "text": {"content": value[:MAX_LENGTH]}}
                 ]
             }
-        elif property_type == RICH_TEXT:
+        elif type == RICH_TEXT:
             property = {
                 "rich_text": [
-                    {"type": "text", "text": {"content": property_value[:MAX_LENGTH]}}
+                    {"type": "text", "text": {"content": value[:MAX_LENGTH]}}
                 ]
             }
-        elif property_type == NUMBER:
-            property = {"number": property_value}
-        elif property_type == STATUS:
-            property = {"status": {"name": property_value}}
-        elif property_type == FILES:
-            property = {"files": [{"type": "external", "name": "Cover", "external": {"url": property_value}}]}
-        elif property_type == DATE:
+        elif type == NUMBER:
+            property = {"number": value}
+        elif type == STATUS:
+            property = {"status": {"name": value}}
+        elif type == FILES:
+            property = {"files": [{"type": "external", "name": "Cover", "external": {"url": value}}]}
+        elif type == DATE:
             property = {
                 "date": {
                     "start": pendulum.from_timestamp(
-                        property_value, tz="Asia/Shanghai"
+                        value, tz="Asia/Shanghai"
                     ).to_datetime_string(),
                     "time_zone": "Asia/Shanghai",
                 }
             }
-        elif property_type==URL:
-            property = {"url": property_value}        
-        elif property_type==SELECT:
-            property = {"select": {"name": property_value}}
-        elif property_type == RELATION:
-            property = {"relation": [{"id": id} for id in property_value]}
+        elif type==URL:
+            property = {"url": value}        
+        elif type==SELECT:
+            property = {"select": {"name": value}}
+        elif type == RELATION:
+            property = {"relation": [{"id": id} for id in value]}
         if property:
-            properties[value] = property
+            properties[key] = property
     return properties
 
 
@@ -332,3 +334,69 @@ def str_to_timestamp(date):
     dt = pendulum.parse(date)
     # 获取时间戳
     return int(dt.timestamp())
+
+upload_url = 'https://wereadassets.malinkang.com/'
+
+
+def upload_image(folder_path, filename,file_path):
+    # 将文件内容编码为Base64
+    with open(file_path, 'rb') as file:
+        content_base64 = base64.b64encode(file.read()).decode('utf-8')
+
+    # 构建请求的JSON数据
+    data = {
+        'file': content_base64,
+        'filename': filename,
+        'folder': folder_path
+    }
+
+    response = requests.post(upload_url, json=data)
+
+    if response.status_code == 200:
+        print('File uploaded successfully.')
+        return response.text
+    else:
+        return None
+
+def url_to_md5(url):
+    # 创建一个md5哈希对象
+    md5_hash = hashlib.md5()
+
+    # 对URL进行编码，准备进行哈希处理
+    # 默认使用utf-8编码
+    encoded_url = url.encode('utf-8')
+
+    # 更新哈希对象的状态
+    md5_hash.update(encoded_url)
+
+    # 获取十六进制的哈希表示
+    hex_digest = md5_hash.hexdigest()
+
+    return hex_digest
+
+def download_image(url, save_dir="cover"):
+    # 确保目录存在，如果不存在则创建
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    file_name = url_to_md5(url) + ".jpg"
+    save_path = os.path.join(save_dir, file_name)
+
+    # 检查文件是否已经存在，如果存在则不进行下载
+    if os.path.exists(save_path):
+        print(f"File {file_name} already exists. Skipping download.")
+        return save_path
+
+    response = requests.get(url, stream=True)
+    if response.status_code == 200:
+        with open(save_path, "wb") as file:
+            for chunk in response.iter_content(chunk_size=128):
+                file.write(chunk)
+        print(f"Image downloaded successfully to {save_path}")
+    else:
+        print(f"Failed to download image. Status code: {response.status_code}")
+    return save_path
+
+def upload_cover(url):
+    cover_file = download_image(url)
+    return upload_image("cover",f"{cover_file.split('/')[-1]}",cover_file)
