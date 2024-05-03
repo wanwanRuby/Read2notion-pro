@@ -6,7 +6,7 @@ import time
 from notion_client import Client
 from retrying import retry
 from datetime import timedelta
-
+from dotenv import load_dotenv
 from utils import (
     format_date,
     get_date,
@@ -22,6 +22,7 @@ from utils import (
     get_property_value,
 )
 
+load_dotenv()
 TAG_ICON_URL = "https://www.notion.so/icons/tag_gray.svg"
 USER_ICON_URL = "https://www.notion.so/icons/user-circle-filled_gray.svg"
 TARGET_ICON_URL = "https://www.notion.so/icons/target_red.svg"
@@ -40,9 +41,11 @@ class NotionHelper:
         "CATEGORY_DATABASE_NAME": "分类",
         "AUTHOR_DATABASE_NAME": "作者",
         "CHAPTER_DATABASE_NAME": "章节",
+        "READ_DATABASE_NAME": "阅读记录",
     }
     database_id_dict = {}
-    image_dict = {}
+    heatmap_block_id = None
+
     def __init__(self):
         self.client = Client(auth=os.getenv("NOTION_TOKEN"), log_level=logging.ERROR)
         self.__cache = {}
@@ -81,7 +84,12 @@ class NotionHelper:
         self.chapter_database_id = self.database_id_dict.get(
             self.database_name_dict.get("CHAPTER_DATABASE_NAME")
         )
+        self.read_database_id = self.database_id_dict.get(
+            self.database_name_dict.get("READ_DATABASE_NAME")
+        )
         self.update_book_database()
+        if self.read_database_id is None:
+            self.create_database()
 
     def extract_page_id(self, notion_url):
         # 正则表达式匹配 32 个字符的 Notion page_id
@@ -94,20 +102,18 @@ class NotionHelper:
         else:
             raise Exception(f"获取NotionID失败，请检查输入的Url是否正确")
 
-
     def search_database(self, block_id):
         children = self.client.blocks.children.list(block_id=block_id)["results"]
         # 遍历子块
         for child in children:
             # 检查子块的类型
-
             if child["type"] == "child_database":
-                self.database_id_dict[
-                    child.get("child_database").get("title")
-                ] = child.get("id")
-            elif child["type"] == "image" and child.get("image").get("external"):
-                self.image_dict["url"] = child.get("image").get("external").get("url")
-                self.image_dict["id"] = child.get("id")
+                self.database_id_dict[child.get("child_database").get("title")] = (
+                    child.get("id")
+                )
+            elif child["type"] == "embed" and child.get("embed").get("url"):
+                if child.get("embed").get("url").startswith("https://heatmap.malinkang.com/"):
+                    self.heatmap_block_id = child.get("id")
             # 如果子块有子块，递归调用函数
             if "has_children" in child and child["has_children"]:
                 self.search_database(child["id"])
@@ -149,11 +155,38 @@ class NotionHelper:
         if len(update_properties) > 0:
             self.client.databases.update(database_id=id, properties=update_properties)
 
-    def update_image_block_link(self, block_id, new_image_url):
+    def create_database(self):
+        title = [
+            {
+                "type": "text",
+                "text": {
+                    "content": self.database_name_dict.get("READ_DATABASE_NAME"),
+                },
+            },
+        ]
+        properties = {
+            "标题": {"title": {}},
+            "时长": {"number": {}},
+            "时间戳": {"number": {}},
+            "日期": {"date": {}},
+            "书架": {
+                "relation": {
+                    "database_id": self.book_database_id,
+                    "single_property": {},
+                }
+            },
+        }
+        parent = parent = {"page_id": self.page_id, "type": "page_id"}
+        self.read_database_id = self.client.databases.create(
+            parent=parent,
+            title=title,
+            icon=get_icon("https://www.notion.so/icons/target_gray.svg"),
+            properties=properties,
+        ).get("id")
+
+    def update_heatmap(self, block_id, url):
         # 更新 image block 的链接
-        self.client.blocks.update(
-            block_id=block_id, image={"external": {"url": new_image_url}}
-        )
+        return self.client.blocks.update(block_id=block_id, embed={"url": url})
 
     def get_week_relation_id(self, date):
         year = date.isocalendar().year
@@ -228,7 +261,7 @@ class NotionHelper:
     def insert_bookmark(self, id, bookmark):
         icon = get_icon(BOOKMARK_ICON_URL)
         properties = {
-            "Name": get_title(bookmark.get("markText","")),
+            "Name": get_title(bookmark.get("markText", "")),
             "bookId": get_rich_text(bookmark.get("bookId")),
             "range": get_rich_text(bookmark.get("range")),
             "bookmarkId": get_rich_text(bookmark.get("bookmarkId")),
@@ -243,7 +276,7 @@ class NotionHelper:
         if "createTime" in bookmark:
             create_time = timestamp_to_date(int(bookmark.get("createTime")))
             properties["Date"] = get_date(create_time.strftime("%Y-%m-%d %H:%M:%S"))
-            self.get_date_relation(properties,create_time)
+            self.get_date_relation(properties, create_time)
         parent = {"database_id": self.bookmark_database_id, "type": "database_id"}
         self.create_page(parent, properties, icon)
 
@@ -251,7 +284,7 @@ class NotionHelper:
         time.sleep(0.1)
         icon = get_icon(TAG_ICON_URL)
         properties = {
-            "Name": get_title(review.get("content","")),
+            "Name": get_title(review.get("content", "")),
             "bookId": get_rich_text(review.get("bookId")),
             "reviewId": get_rich_text(review.get("reviewId")),
             "blockId": get_rich_text(review.get("blockId")),
@@ -294,14 +327,20 @@ class NotionHelper:
         return self.client.pages.update(page_id=page_id, properties=properties)
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
-    def update_page(self, page_id, properties, icon):
+    def update_page(self, page_id, properties, cover):
         return self.client.pages.update(
-            page_id=page_id, icon=icon, properties=properties
+            page_id=page_id, properties=properties, cover=cover
         )
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def create_page(self, parent, properties, icon):
         return self.client.pages.create(parent=parent, properties=properties, icon=icon)
+
+    @retry(stop_max_attempt_number=3, wait_fixed=5000)
+    def create_book_page(self, parent, properties, icon):
+        return self.client.pages.create(
+            parent=parent, properties=properties, icon=icon, cover=icon
+        )
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def query(self, **kwargs):
@@ -336,12 +375,20 @@ class NotionHelper:
             bookId = get_property_value(result.get("properties").get("BookId"))
             books_dict[bookId] = {
                 "pageId": result.get("id"),
-                "readingTime": get_property_value(result.get("properties").get("阅读时长")),
-                "category": get_property_value(result.get("properties").get("书架分类")),
+                "readingTime": get_property_value(
+                    result.get("properties").get("阅读时长")
+                ),
+                "category": get_property_value(
+                    result.get("properties").get("书架分类")
+                ),
                 "Sort": get_property_value(result.get("properties").get("Sort")),
-                "douban_url": get_property_value(result.get("properties").get("豆瓣链接")),
-                "cover": get_property_value(result.get("properties").get("封面")),
-                "myRating": get_property_value(result.get("properties").get("我的评分")),
+                "douban_url": get_property_value(
+                    result.get("properties").get("豆瓣链接")
+                ),
+                "cover": result.get("cover"),
+                "myRating": get_property_value(
+                    result.get("properties").get("我的评分")
+                ),
                 "comment": get_property_value(result.get("properties").get("豆瓣短评")),
                 "status": get_property_value(result.get("properties").get("阅读状态")),
             }
